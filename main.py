@@ -257,6 +257,7 @@ class PreferenceRequest(BaseModel):
     rejected: List[str]
     query: str
     file_content: str
+    file_path: str 
 
 
 class ChatRequest(BaseModel):
@@ -415,33 +416,40 @@ async def record_preference(request: PreferenceRequest):
         await r.ping()
         uo_name = ALL_UOS_DATA.get(request.uo_id, "Unknown Operation")
 
-        # UO 블록 검색을 위한 동적 정규식
+        # ⭐️ 컨텍스트 정보 추출
+        path_parts = request.file_path.replace("\\", "/").split("/")
+        experiment_folder = path_parts[-2] if len(path_parts) > 1 else "unknown_experiment"
+        workflow_file = path_parts[-1] if path_parts else "unknown_workflow"
+
+        # (기존 프롬프트 생성 로직은 동일)
         uo_block_pattern = re.compile(r"(### \[" + re.escape(request.uo_id) + r".*?\n.*?)(?=### \[U[A-Z]{2,3}\d{3}|\Z)", re.DOTALL)
         uo_match = uo_block_pattern.search(request.file_content)
         uo_block_content = uo_match.group(1) if uo_match else ""
-
         input_context = _extract_section_content(uo_block_content, "Input")
         output_context = _extract_section_content(uo_block_content, "Output")
-
         prompt = (
             f"Given the experimental context, write the '{request.section}' section for the Unit Operation '{request.uo_id}: {uo_name}'.\n"
             f"- Overall Goal: {request.query}\n"
             f"- Starting Materials (Input): {input_context}\n"
             f"- Desired End-Product (Output): {output_context}\n"
-            # AI에게 원본 제안을 제공하여, 수정된 내용과의 차이를 이해하도록 돕습니다.
-            f"- The initial AI suggestion was: {request.chosen_original}" 
+            f"- The initial AI suggestion was: {request.chosen_original}"
         )
-        
-        # ⭐️ 핵심 변경: 'chosen'에 사용자의 최종 수정본을, 'rejected'에 AI의 원본 제안을 추가
+
         preference_data = {
             "prompt": prompt,
-            "chosen": request.chosen_edited, # 사용자의 수정본이 '긍정' 샘플이 됨
-            # AI의 원본 제안도 '부정' 샘플에 추가하여, 단순 선택이 아닌 '개선'되었음을 명확히 함
-            "rejected": [request.chosen_original] + request.rejected 
+            "chosen": request.chosen_edited,
+            "rejected": [request.chosen_original] + request.rejected,
+            # ⭐️ 추출된 컨텍스트 정보를 JSON에 함께 저장
+            "metadata": {
+                "experiment_folder": experiment_folder,
+                "workflow_file": workflow_file,
+                "unit_operation_id": request.uo_id,
+                "section": request.section,
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            }
         }
 
         key = f"dpo:preference:{uuid.uuid4()}"
-        # JSON 직렬화로 안전하게 저장
         await r.set(key, json.dumps(preference_data, ensure_ascii=False))
         
         logger.info(f"Successfully recorded user-edited preference to Redis with key: {key}")
