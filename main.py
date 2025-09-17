@@ -248,6 +248,12 @@ class PopulateNoteResponse(BaseModel):
     section: str
     options: List[str]
 
+class GitFeedbackRequest(BaseModel):
+    prompt: str
+    chosen: str
+    rejected: List[str]
+    metadata: Dict
+
 # ⭐️ 변경점: 사용자 수정본을 받기 위한 모델 수정
 class PreferenceRequest(BaseModel):
     uo_id: str
@@ -522,3 +528,24 @@ def clear_history(conversation_id: str):
 def health_check():
     """API 서버가 실행 중인지 확인하는 상태 체크 엔드포인트입니다."""
     return {"status": "ok", "version": app.version}
+
+@app.post("/record_git_feedback", status_code=204)
+async def record_git_feedback(request: GitFeedbackRequest):
+    """
+    GitHub Action으로부터 최종 commit 기반 DPO 데이터를 수신하여 Redis에 저장합니다.
+    """
+    logger.info(f"Received finalized DPO data from Git for: {request.metadata.get('workflow_file')}")
+    r = redis.Redis(connection_pool=redis_pool)
+    try:
+        # 타임스탬프 추가
+        request.metadata["timestamp_unix"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        
+        key = f"dpo:git_finalized_preference:{uuid.uuid4()}"
+        await r.set(key, json.dumps(request.dict(), ensure_ascii=False))
+        
+        logger.info(f"Successfully saved finalized DPO data to Redis with key: {key}")
+        
+    except Exception as e:
+        logger.error(f"Error saving git feedback to Redis: {e}", exc_info=True)
+        # GitHub Action은 이 에러를 볼 수 없지만, 로깅은 중요합니다.
+        raise HTTPException(status_code=500, detail="Failed to save feedback to Redis.")
