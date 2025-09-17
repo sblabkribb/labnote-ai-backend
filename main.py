@@ -257,7 +257,8 @@ class PreferenceRequest(BaseModel):
     rejected: List[str]
     query: str
     file_content: str
-    file_path: str 
+    file_path: str
+    supervisor_evaluations: List[Dict] 
 
 
 class ChatRequest(BaseModel):
@@ -410,18 +411,18 @@ async def populate_note(request: PopulateNoteRequest):
 # ⭐️ 변경점: 사용자 수정본을 학습 데이터로 저장하는 로직
 @app.post("/record_preference", status_code=204)
 async def record_preference(request: PreferenceRequest):
-    logger.info(f"Phase 3: Recording USER EDITED preference for UO '{request.uo_id}' - Section '{request.section}'")
+    logger.info(f"Recording DPO data for UO '{request.uo_id}' with full context.")
     r = redis.Redis(connection_pool=redis_pool)
     try:
         await r.ping()
         uo_name = ALL_UOS_DATA.get(request.uo_id, "Unknown Operation")
 
-        # ⭐️ 컨텍스트 정보 추출
+        # 1. 파일 경로에서 컨텍스트 정보 추출
         path_parts = request.file_path.replace("\\", "/").split("/")
         experiment_folder = path_parts[-2] if len(path_parts) > 1 else "unknown_experiment"
         workflow_file = path_parts[-1] if path_parts else "unknown_workflow"
 
-        # (기존 프롬프트 생성 로직은 동일)
+        # 2. 프롬프트 재구성 (기존과 동일)
         uo_block_pattern = re.compile(r"(### \[" + re.escape(request.uo_id) + r".*?\n.*?)(?=### \[U[A-Z]{2,3}\d{3}|\Z)", re.DOTALL)
         uo_match = uo_block_pattern.search(request.file_content)
         uo_block_content = uo_match.group(1) if uo_match else ""
@@ -435,24 +436,26 @@ async def record_preference(request: PreferenceRequest):
             f"- The initial AI suggestion was: {request.chosen_original}"
         )
 
+        # 3. Redis에 저장할 최종 데이터 구성
         preference_data = {
             "prompt": prompt,
             "chosen": request.chosen_edited,
             "rejected": [request.chosen_original] + request.rejected,
-            # ⭐️ 추출된 컨텍스트 정보를 JSON에 함께 저장
             "metadata": {
                 "experiment_folder": experiment_folder,
                 "workflow_file": workflow_file,
                 "unit_operation_id": request.uo_id,
                 "section": request.section,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                # ⭐️ Supervisor 평가 결과 저장
+                "supervisor_evaluations": request.supervisor_evaluations
             }
         }
 
         key = f"dpo:preference:{uuid.uuid4()}"
         await r.set(key, json.dumps(preference_data, ensure_ascii=False))
         
-        logger.info(f"Successfully recorded user-edited preference to Redis with key: {key}")
+        logger.info(f"Successfully recorded DPO data with full context to Redis: {key}")
 
     except redis.exceptions.ConnectionError as e:
         logger.error(f"Redis connection error: {e}", exc_info=True)
@@ -462,6 +465,14 @@ async def record_preference(request: PreferenceRequest):
         raise HTTPException(status_code=500, detail="An internal error occurred while recording preference.")
     
     return
+
+@app.get("/constants", summary="Get All Workflows and Unit Operations")
+def get_constants():
+    """Returns the complete lists of all workflows and unit operations."""
+    return {
+        "ALL_WORKFLOWS": ALL_WORKFLOWS_DATA,
+        "ALL_UOS": ALL_UOS_DATA
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -511,11 +522,3 @@ def clear_history(conversation_id: str):
 def health_check():
     """API 서버가 실행 중인지 확인하는 상태 체크 엔드포인트입니다."""
     return {"status": "ok", "version": app.version}
-
-@app.get("/constants", summary="Get All Workflows and Unit Operations")
-def get_constants():
-    """Returns the complete lists of all workflows and unit operations."""
-    return {
-        "ALL_WORKFLOWS": ALL_WORKFLOWS_DATA,
-        "ALL_UOS": ALL_UOS_DATA
-    }
