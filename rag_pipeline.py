@@ -27,7 +27,7 @@ class RAGPipeline:
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL")
         self.embedding_model = os.getenv("EMBEDDING_MODEL")
         self.index_name = "labnote_index"
-        self.docs_directory = "./sops"
+        self.docs_directory = "./sop"
 
         if not all([self.redis_url, self.ollama_base_url, self.embedding_model]):
             raise ValueError("Required environment variables are missing. Check your .env file.")
