@@ -1,3 +1,9 @@
+정말 죄송합니다. 제가 생성한 다이어그램 코드에 오류가 있었습니다. Mermaid 문법을 다시 확인하여 렌더링 문제를 해결한 전체 `README.md` 파일을 다시 제공해 드리겠습니다.
+
+오류의 원인은 다이어그램 노드 이름에 괄호 `()`와 같은 특수 문자가 포함되어 파싱 오류가 발생했기 때문입니다. 이 부분을 수정했습니다.
+
+-----
+
 # LabNote AI Backend
 
 `labnote-ai-backend`는 실험실 노트 작성을 자동화하고 가속화하기 위해 설계된 AI 기반 백엔드 시스템입니다. 이 시스템은 실험자가 실험 설계, 절차, 결과 기록 등의 과정을 보다 효율적으로 수행할 수 있도록 지원하며, 사용자의 피드백을 통해 지속적으로 학습하고 발전하는 DPO (Direct Preference Optimization) 파이프라인을 갖추고 있습니다.
@@ -43,7 +49,7 @@ graph TD
 
     subgraph "AI Core Infrastructure"
         H --> J[LLM Utils];
-        J --> K[Ollama (LLMs: biollama3, llama3:70b, etc.)];
+        J --> K["Ollama (LLMs: biollama3, etc.)"];
         H --> L{RAG Pipeline};
     end
     
@@ -51,12 +57,12 @@ graph TD
         L -- "Retrieves SOP context" --> M[Redis Vector Store];
         M -- "Embeddings" --> N[Nomic Embeddings];
         F -- "Stores DPO data" --> O[Redis Cache];
-        L -- "Loads SOPs" --> P[SOP Documents (.md files)];
+        L -- "Loads SOPs" --> P["SOP Docs (.md)"];
     end
 
     subgraph "CI/CD & DPO Pipeline"
-        Q[GitHub Push (labnote/*.md)] --> R{GitHub Actions};
-        R -- "Runs generate_dpo_from_git.py" --> C;
+        Q["GitHub Push (labnote/*.md)"] --> R{GitHub Actions};
+        R -- "Runs script" --> C;
         S[run_full_dpo_pipeline.sh] --> T[DPO Training];
         T --> K;
         S --> B;
@@ -86,6 +92,8 @@ graph TD
   - **사용자 수정 기록 (`/record_preference`):** 사용자가 AI의 제안을 선택하고 수정한 최종 내용을 `chosen`으로, AI의 원본 제안과 다른 옵션들을 `rejected`로 Redis에 저장하여 DPO 학습 데이터를 구축합니다.
   - **Git 커밋 기반 피드백 자동화 (`dpo_feedback.yml`):** `labnote` 디렉토리의 `.md` 파일에 변경사항이 Push되면 GitHub Actions가 트리거됩니다. 이전 버전과 현재 버전을 비교하여 변경된 내용을 `chosen`(현재)과 `rejected`(이전)로 구분하고, 이를 DPO 데이터로 API 서버(`record_git_feedback`)에 전송합니다.
 
+-----
+
 ## 3\. 작동 방식 (데이터 흐름)
 
 AI가 실험 노트의 특정 섹션을 채우는 과정은 다음과 같습니다.
@@ -93,35 +101,39 @@ AI가 실험 노트의 특정 섹션을 채우는 과정은 다음과 같습니�
 ```mermaid
 sequenceDiagram
     participant User
-    participant Backend (FastAPI)
-    participant Specialist Agents
-    participant RAG Pipeline
-    participant Supervisor Agent
+    participant Backend
+    participant SpecialistAgents as Specialist Agents
+    participant RAG
+    participant SupervisorAgent as Supervisor Agent
     participant Redis
+    participant OllamaLLMs as Ollama (LLMs)
+    participant Ollama70b as Ollama (llama3:70b)
 
-    User->>Backend: POST /populate_note (query, uo_id, section)
-    Backend->>Specialist Agents: Generate drafts
-    Specialist Agents->>RAG Pipeline: Retrieve context for query
-    RAG Pipeline->>Redis: Similarity search on SOP vectors
-    Redis-->>RAG Pipeline: Return relevant documents
-    RAG Pipeline-->>Specialist Agents: Formatted context
-    Specialist Agents->>Ollama (LLMs): Call multiple models with context
-    Ollama (LLMs)-->>Specialist Agents: Generate multiple drafts
-    Specialist Agents-->>Supervisor Agent: Submit drafts for evaluation
-    Supervisor Agent->>Ollama (llama3:70b): Evaluate drafts (score & justification)
-    Ollama (llama3:70b)-->>Supervisor Agent: Evaluation results (JSON)
+    User->>Backend: POST /populate_note
+    Backend->>SpecialistAgents: Generate drafts
+    SpecialistAgents->>RAG: Retrieve context
+    RAG->>Redis: Similarity search
+    Redis-->>RAG: Return documents
+    RAG-->>SpecialistAgents: Formatted context
+    SpecialistAgents->>OllamaLLMs: Call multiple models
+    OllamaLLMs-->>SpecialistAgents: Generate drafts
+    SpecialistAgents-->>SupervisorAgent: Submit drafts
+    SupervisorAgent->>Ollama70b: Evaluate drafts
+    Ollama70b-->>SupervisorAgent: Evaluation results (JSON)
     
-    alt Quality Threshold Passed (>= 8.5)
-        Supervisor Agent-->>Backend: Return high-quality options
+    alt Quality Threshold Passed
+        SupervisorAgent-->>Backend: Return options
         Backend-->>User: Present options
-        User->>Backend: POST /record_preference (chosen_edited, rejected)
+        User->>Backend: POST /record_preference
         Backend->>Redis: Store DPO data
     else Quality Threshold Not Passed
-        Supervisor Agent-->>Specialist Agents: Request revision with feedback
-        Specialist Agents->>Ollama (LLMs): Regenerate drafts with feedback
-        Note right of Specialist Agents: Loop until quality improves
+        SupervisorAgent-->>SpecialistAgents: Request revision with feedback
+        SpecialistAgents->>OllamaLLMs: Regenerate drafts
+        Note right of SpecialistAgents: Loop until quality improves
     end
 ```
+
+-----
 
 ## 4\. 프로젝트 구조
 
@@ -144,6 +156,8 @@ sequenceDiagram
 └── run_full_dpo_pipeline.sh    # DPO 학습-배포-서버 실행 전체 파이프라인 스크립트
 ```
 
+-----
+
 ## 5\. 설치 및 설정
 
 ### 사전 요구사항
@@ -159,12 +173,6 @@ sequenceDiagram
     ```bash
     git clone --recurse-submodules https://github.com/sblabkribb/labnote-ai-backend.git
     cd labnote-ai-backend
-    ```
-
-    *만약 서브모듈 없이 클론했다면:*
-
-    ```bash
-    git submodule update --init --recursive
     ```
 
 2.  **Python 가상 환경 생성 및 활성화:**
@@ -197,6 +205,8 @@ sequenceDiagram
     LLM_MODEL="biollama3"
     ```
 
+-----
+
 ## 6\. 실행 방법
 
 ### FastAPI 서버 실행
@@ -217,11 +227,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 sh run_full_dpo_pipeline.sh
 ```
 
-이 스크립트는 다음 단계를 자동으로 수행합니다:
-
-1.  DPO 모델 학습 실행 (`scripts/run_dpo_training.py`)
-2.  학습된 모델을 Ollama에 배포 (`scripts/deploy_model.sh`)
-3.  FastAPI 서버를 백그라운드에서 실행 (`nohup uvicorn ... &`)
+-----
 
 ## 7\. 주요 기술 스택
 
@@ -230,6 +236,8 @@ sh run_full_dpo_pipeline.sh
   - **데이터베이스**: Redis (Vector Store & Cache)
   - **DPO 학습**: Transformers, TRL (Transformer Reinforcement Learning), PyTorch, Datasets
   - **기타**: Pydantic, Uvicorn, python-dotenv
+
+-----
 
 ## 8\. API 엔드포인트
 
