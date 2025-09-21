@@ -307,7 +307,6 @@ def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) 
 """
 
 def _extract_section_content(uo_block: str, section_name: str) -> str:
-    # 이 함수는 변경 없음
     pattern = re.compile(r"#### " + re.escape(section_name) + r"\n(.*?)(?=\n####|\Z)", re.DOTALL)
     match = pattern.search(uo_block)
     if match:
@@ -329,7 +328,6 @@ async def create_scaffold(request: CreateScaffoldRequest):
         wf_id = request.workflow_id
         wf_name = ALL_WORKFLOWS_DATA.get(wf_id, "Custom Workflow")
         
-        # ⭐️⭐️⭐️ [수정된 부분 2] ⭐️⭐️⭐️
         # wf_description에서 '|'를 '>'로 변경합니다.
         wf_description = "> 이 워크플로의 설명을 간략하게 작성합니다 (아래 설명은 템플릿으로 사용자 목적에 맞도록 수정합니다)"
         
@@ -457,7 +455,7 @@ async def record_preference(request: PreferenceRequest):
                 "unit_operation_id": request.uo_id,
                 "section": request.section,
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                # ⭐️ Supervisor 평가 결과 저장
+                # Supervisor 평가 결과 저장
                 "supervisor_evaluations": request.supervisor_evaluations
             }
         }
