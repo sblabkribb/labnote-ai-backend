@@ -280,29 +280,39 @@ def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) 
     return f"""
 ### [{uo_id} {uo_name}]
 #### Meta
+
 > Experimenter: {experimenter}
+>
 > Start_date: '{formatted_datetime}'
+>
 > End_date: ''
 
 #### Input
+
 > (samples from the previous step)
 
 #### Reagent
+
 > (e.g. enzyme, buffer, etc.)
 
 #### Consumables
+
 > (e.g. filter, well-plate, etc.)
 
 #### Equipment
+
 > (e.g. centrifuge, spectrophotometer, etc.)
 
 #### Method
+
 > (method used in this step)
 
 #### Output
+
 > (samples to the next step)
 
 #### Results & Discussions
+
 > (Any results and discussions. Link file path if needed)
 """
 
