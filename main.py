@@ -1,3 +1,5 @@
+# labnote-ai-backend/main.py
+
 import os
 import logging
 import datetime
@@ -23,13 +25,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- [최적화 1] 정규식 사전 컴파일 ---
-UO_BLOCK_EXTRACT_PATTERN = re.compile(
-    r"(### \[" + r"(?P<uo_id>U[A-Z]{2,3}\d{3})" + r".*?\n.*?)(?=### \[U[A-Z]{2,3}\d{3}|\Z)",
-    re.DOTALL
-)
-
-# --- [최적화 2] 데이터 사전 처리 ---
+# --- 데이터 사전 처리 ---
 WORKFLOW_GUIDE_DATA = """
 # Workflows Guide
 ## Design (설계)
@@ -101,7 +97,6 @@ WORKFLOW_GUIDE_DATA = """
 - WL090: Fermentation Optimization Model Development (발효 데이터를 기반으로 목표 화합물 생산 최적 조건 탐색)
 - WL100: Foundation Model Development (대규모 서열 데이터셋을 이용한 파운데이션 모델 훈련)
 """
-
 UNIT_OPERATION_GUIDE_DATA = """
 # Unit Operations Guide
 ## Hardware (UHW)
@@ -200,7 +195,7 @@ def _precompute_data():
 
 ALL_UOS_DATA, ALL_WORKFLOWS_DATA = _precompute_data()
 
-# --- [최적화 3] Redis 연결 관리 ---
+# --- Redis 연결 관리 (기존과 동일) ---
 redis_pool = None
 
 @asynccontextmanager
@@ -216,6 +211,7 @@ async def lifespan(app: FastAPI):
     if redis_pool:
         await redis_pool.disconnect()
 
+
 # FastAPI 앱 초기화
 app = FastAPI(
     title="LabNote AI Assistant Backend",
@@ -224,7 +220,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- 인메모리 대화 기록 저장소 ---
+# --- Pydantic 모델 정의 ---
 conversation_histories: Dict[str, List[Dict[str, str]]] = {}
 
 # --- Pydantic 모델 정의 ---
@@ -254,7 +250,6 @@ class GitFeedbackRequest(BaseModel):
     rejected: List[str]
     metadata: Dict
 
-# ⭐️ 변경점: 사용자 수정본을 받기 위한 모델 수정
 class PreferenceRequest(BaseModel):
     uo_id: str
     section: str
@@ -279,10 +274,10 @@ class ChatResponse(BaseModel):
 def get_seoul_date_string():
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime('%Y-%m-%d')
 
+# create_unit_operation_template 함수에서 긴 수평선을 제거합니다.
 def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) -> str:
     formatted_datetime = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
     return f"""
-------------------------------------------------------------------------
 ### [{uo_id} {uo_name}]
 #### Meta
 - Experimenter: {experimenter}
@@ -302,11 +297,11 @@ def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) 
 - (samples to the next step)
 #### Results & Discussions
 - (Any results and discussions. Link file path if needed)
-------------------------------------------------------------------------
 """
 
 def _extract_section_content(uo_block: str, section_name: str) -> str:
-    pattern = re.compile(r"#### " + re.escape(section_name) + r"\n(.*?)(?=\n####|\n------------------------------------------------------------------------)", re.DOTALL)
+    # 이 함수는 변경 없음
+    pattern = re.compile(r"#### " + re.escape(section_name) + r"\n(.*?)(?=\n####|\Z)", re.DOTALL)
     match = pattern.search(uo_block)
     if match:
         content = match.group(1).strip()
@@ -324,24 +319,23 @@ async def create_scaffold(request: CreateScaffoldRequest):
         formatted_date = get_seoul_date_string()
         
         # --- 1. 워크플로우 파일 생성 로직 ---
-        
-        # 선택된 워크플로우 ID를 사용하여 이름과 파일명 생성
         wf_id = request.workflow_id
         wf_name = ALL_WORKFLOWS_DATA.get(wf_id, "Custom Workflow")
-        wf_description = "이 워크플로의 설명을 간략하게 작성합니다 (아래 설명은 템플릿으로 사용자 목적에 맞도록 수정합니다)"
         
-        # 올바른 파일명 생성 (예: 001_WD070_Vector_Design.md)
+        # ⭐️⭐️⭐️ [수정된 부분 2] ⭐️⭐️⭐️
+        # wf_description에서 '|'를 '>'로 변경합니다.
+        wf_description = "> 이 워크플로의 설명을 간략하게 작성합니다 (아래 설명은 템플릿으로 사용자 목적에 맞도록 수정합니다)"
+        
         workflow_file_name = f"001_{wf_id}_{wf_name.replace(' ', '_')}.md"
 
-        # 워크플로우 파일 내부에 들어갈 유닛 오퍼레이션 블록들을 모두 생성
         unit_operation_blocks = []
         for uo_id in request.unit_operation_ids:
             uo_name = ALL_UOS_DATA.get(uo_id, "Unknown Operation")
             unit_operation_blocks.append(create_unit_operation_template(uo_id, uo_name, experimenter))
         
-        all_uo_blocks_content = "\n".join(unit_operation_blocks)
+        # all_uo_blocks_content는 이제 수평선 없이 ### 헤더로만 구분됩니다.
+        all_uo_blocks_content = "\n\n".join(unit_operation_blocks)
 
-        # 최종 워크플로우 파일 콘텐츠 조립
         workflow_content = f"""---
 title: "{wf_id} {wf_name}"
 experimenter: "{experimenter}"
@@ -350,18 +344,18 @@ last_updated_date: '{formatted_date}'
 ---
 
 ## [{wf_id} {wf_name}]
-| {wf_description}
+{wf_description}
 
 ## 🗂️ 관련 유닛오퍼레이션
+
 {all_uo_blocks_content}
 """
 
         # --- 2. README.md 생성 로직 ---
-
-        # README.md에는 생성된 워크플로우 파일 링크 하나만 포함
         link_text = f"001 {wf_id} {wf_name}"
         workflow_link = f"[ ] [{link_text}](./{workflow_file_name})"
 
+        # readme_content의 모든 설명 줄에서 '|'를 '>'로 변경합니다.
         readme_content = f"""---
 title: "{request.query}"
 experimenter: "{experimenter}"
@@ -371,13 +365,15 @@ experiment_type: labnote
 ---
 
 ## 🎯 실험 목표
-| 이 실험의 주된 목표와 가설을 간략하게 작성합니다.
+> 이 실험의 주된 목표와 가설을 간략하게 작성합니다.
 
-## 🗂️ 관련 워크플로우
+## 🗂️ 관련 워크플로
+> 아래 표시 사이에 관련된 워크플로 파일 목록을 입력합니다.
+> `F1`, `New workflow` 명령 수행시 해당 목록은 표시된 위치 사이에 자동 추가됩니다.
+
 {workflow_link}
 """
         
-        # --- 3. 최종 파일 딕셔너리 반환 ---
         files_to_create = {
             "README.md": readme_content,
             workflow_file_name: workflow_content
@@ -389,13 +385,14 @@ experiment_type: labnote
         logger.error(f"Error during multi-file scaffold creation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error creating scaffold: {e}")
 
+# --- 나머지 API 엔드포인트 ---
 @app.post("/populate_note", response_model=PopulateNoteResponse)
 async def populate_note(request: PopulateNoteRequest):
     logger.info(f"Phase 2: Populating section '{request.section}' for UO '{request.uo_id}'")
     try:
         # UO 블록을 찾기 위한 동적 정규식 (사전 컴파일된 것 사용 불가, ID가 동적임)
         pattern = re.compile(
-            r"(------------------------------------------------------------------------\n### \[" + re.escape(request.uo_id) + r".*?\]\n.*?------------------------------------------------------------------------)",
+            r"(### \[" + re.escape(request.uo_id) + r".*?\]\n.*?)(?=### \[U[A-Z]{2,3}\d{3}|\Z)",
             re.DOTALL
         )
         match = pattern.search(request.file_content)
@@ -414,7 +411,7 @@ async def populate_note(request: PopulateNoteRequest):
         logger.error(f"Error populating note: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error populating note: {e}")
 
-# ⭐️ 변경점: 사용자 수정본을 학습 데이터로 저장하는 로직
+
 @app.post("/record_preference", status_code=204)
 async def record_preference(request: PreferenceRequest):
     logger.info(f"Recording DPO data for UO '{request.uo_id}' with full context.")
