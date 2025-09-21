@@ -397,13 +397,15 @@ experiment_type: labnote
 async def populate_note(request: PopulateNoteRequest):
     logger.info(f"Phase 2: Populating section '{request.section}' for UO '{request.uo_id}'")
     try:
-        # UO 블록을 찾기 위한 동적 정규식 (사전 컴파일된 것 사용 불가, ID가 동적임)
+        # 정규식에 \\? 를 추가하여 `[` 와 `\[` 를 모두 처리하도록 변경
         pattern = re.compile(
-            r"(### \[" + re.escape(request.uo_id) + r".*?\]\n.*?)(?=### \[U[A-Z]{2,3}\d{3}|\Z)",
+            r"(### \\?\[" + re.escape(request.uo_id) + r".*?\\?\]\n.*?)(?=### \\?\[U[A-Z]{2,3}\d{3}|\Z)",
             re.DOTALL
         )
         match = pattern.search(request.file_content)
         if not match:
+            # 오류 발생 시, 어떤 내용으로 검색했는지 로그에 남겨 디버깅을 돕도록 개선
+            logger.error(f"Could not find UO block for ID '{request.uo_id}'. Searched content snippet: \n---\n{request.file_content[:500]}\n---")
             raise HTTPException(status_code=404, detail=f"Unit Operation block for ID '{request.uo_id}' not found.")
         
         uo_block = match.group(1)
@@ -417,7 +419,6 @@ async def populate_note(request: PopulateNoteRequest):
     except Exception as e:
         logger.error(f"Error populating note: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error populating note: {e}")
-
 
 @app.post("/record_preference", status_code=204)
 async def record_preference(request: PreferenceRequest):
