@@ -212,10 +212,16 @@ def create_agent_graph():
 
 # --- Main execution function ---
 def run_agent_team(query: str, uo_block: str, section: str) -> Dict:
-    match = re.search(r"### \[(U[A-Z]{2,3}\d{3}) (.*)\]", uo_block)
+    # 정규식에 \\? 를 추가하여 `[` 와 `\[` 를 모두 처리하도록 변경
+    match = re.search(r"### \\?\[(U[A-Z]{2,3}\d{3,4}) (.*?)\\?\]", uo_block)
     if not match:
-        logger.error(f"Could not parse UO ID and Name from block.")
-        return {"options": ["Error: Could not identify Unit Operation."]}
+        logger.error(f"Could not parse UO ID and Name from block. UO Block Snippet:\n---\n{uo_block[:200]}\n---")
+        # 오류 발생 시에도 Pydantic 모델이 요구하는 키를 포함하여 반환
+        return {
+            "uo_id": "Error",
+            "section": section,
+            "options": ["Error: Could not identify the Unit Operation. Please check the markdown format."]
+        }
         
     uo_id, uo_name = match.groups()
 
