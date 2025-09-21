@@ -280,23 +280,30 @@ def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) 
     return f"""
 ### [{uo_id} {uo_name}]
 #### Meta
-- Experimenter: {experimenter}
-- Start_date: '{formatted_datetime}'
-- End_date: ''
+> Experimenter: {experimenter}
+> Start_date: '{formatted_datetime}'
+> End_date: ''
+
 #### Input
-- (samples from the previous step)
+> (samples from the previous step)
+
 #### Reagent
-- (e.g. enzyme, buffer, etc.)
+> (e.g. enzyme, buffer, etc.)
+
 #### Consumables
-- (e.g. filter, well-plate, etc.)
+> (e.g. filter, well-plate, etc.)
+
 #### Equipment
-- (e.g. centrifuge, spectrophotometer, etc.)
+> (e.g. centrifuge, spectrophotometer, etc.)
+
 #### Method
-- (method used in this step)
+> (method used in this step)
+
 #### Output
-- (samples to the next step)
+> (samples to the next step)
+
 #### Results & Discussions
-- (Any results and discussions. Link file path if needed)
+> (Any results and discussions. Link file path if needed)
 """
 
 def _extract_section_content(uo_block: str, section_name: str) -> str:
