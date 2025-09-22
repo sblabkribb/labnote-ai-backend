@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from pathlib import Path
+import git
 
 # Local imports
 from rag_pipeline import rag_pipeline
@@ -25,7 +27,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 데이터 사전 처리 ---
+# --- 데이터 사전 처리 (기존과 동일) ---
 WORKFLOW_GUIDE_DATA = """
 # Workflows Guide
 ## Design (설계)
@@ -195,7 +197,7 @@ def _precompute_data():
 
 ALL_UOS_DATA, ALL_WORKFLOWS_DATA = _precompute_data()
 
-# --- Redis 연결 관리 (기존과 동일) ---
+# --- Redis 연결 관리 (RAG 파이프라인 전용) ---
 redis_pool = None
 
 @asynccontextmanager
@@ -211,7 +213,6 @@ async def lifespan(app: FastAPI):
     if redis_pool:
         await redis_pool.disconnect()
 
-
 # FastAPI 앱 초기화
 app = FastAPI(
     title="LabNote AI Assistant Backend",
@@ -223,7 +224,6 @@ app = FastAPI(
 # --- Pydantic 모델 정의 ---
 conversation_histories: Dict[str, List[Dict[str, str]]] = {}
 
-# --- Pydantic 모델 정의 ---
 class CreateScaffoldRequest(BaseModel):
     query: str
     workflow_id: str
@@ -253,14 +253,13 @@ class GitFeedbackRequest(BaseModel):
 class PreferenceRequest(BaseModel):
     uo_id: str
     section: str
-    chosen_original: str  # AI가 제안하고 사용자가 선택한 원본
-    chosen_edited: str    # 사용자가 최종 수정한 버전
+    chosen_original: str
+    chosen_edited: str
     rejected: List[str]
     query: str
     file_content: str
     file_path: str
-    supervisor_evaluations: List[Dict] 
-
+    supervisor_evaluations: List[Dict]
 
 class ChatRequest(BaseModel):
     query: str
@@ -274,7 +273,6 @@ class ChatResponse(BaseModel):
 def get_seoul_date_string():
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime('%Y-%m-%d')
 
-# create_unit_operation_template 함수에서 긴 수평선을 제거합니다.
 def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) -> str:
     formatted_datetime = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
     return f"""
@@ -307,7 +305,6 @@ def create_unit_operation_template(uo_id: str, uo_name: str, experimenter: str) 
 - (Any results and discussions. Link file path if needed)
 """
 
-
 def _extract_section_content(uo_block: str, section_name: str) -> str:
     pattern = re.compile(r"#### " + re.escape(section_name) + r"\n(.*?)(?=\n####|\Z)", re.DOTALL)
     match = pattern.search(uo_block)
@@ -322,15 +319,12 @@ def _extract_section_content(uo_block: str, section_name: str) -> str:
 async def create_scaffold(request: CreateScaffoldRequest):
     logger.info(f"Corrected multi-file scaffold generation for WF: {request.workflow_id}")
     try:
-        # --- 기본 정보 설정 ---
         experimenter = request.experimenter
         formatted_date = get_seoul_date_string()
         
-        # --- 1. 워크플로우 파일 생성 로직 ---
         wf_id = request.workflow_id
         wf_name = ALL_WORKFLOWS_DATA.get(wf_id, "Custom Workflow")
         
-        # wf_description에서 '|'를 '>'로 변경합니다.
         wf_description = "> 이 워크플로의 설명을 간략하게 작성합니다 (아래 설명은 템플릿으로 사용자 목적에 맞도록 수정합니다)"
         
         workflow_file_name = f"001_{wf_id}_{wf_name.replace(' ', '_')}.md"
@@ -340,7 +334,6 @@ async def create_scaffold(request: CreateScaffoldRequest):
             uo_name = ALL_UOS_DATA.get(uo_id, "Unknown Operation")
             unit_operation_blocks.append(create_unit_operation_template(uo_id, uo_name, experimenter))
         
-        # all_uo_blocks_content는 이제 수평선 없이 ### 헤더로만 구분됩니다.
         all_uo_blocks_content = "\n\n".join(unit_operation_blocks)
 
         workflow_content = f"""---
@@ -357,12 +350,9 @@ last_updated_date: '{formatted_date}'
 
 {all_uo_blocks_content}
 """
-
-        # --- 2. README.md 생성 로직 ---
         link_text = f"001 {wf_id} {wf_name}"
         workflow_link = f"[ ] [{link_text}](./{workflow_file_name})"
 
-        # readme_content의 모든 설명 줄에서 '|'를 '>'로 변경합니다.
         readme_content = f"""---
 title: "{request.query}"
 experimenter: "{experimenter}"
@@ -392,24 +382,20 @@ experiment_type: labnote
         logger.error(f"Error during multi-file scaffold creation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error creating scaffold: {e}")
 
-# --- 나머지 API 엔드포인트 ---
 @app.post("/populate_note", response_model=PopulateNoteResponse)
 async def populate_note(request: PopulateNoteRequest):
     logger.info(f"Phase 2: Populating section '{request.section}' for UO '{request.uo_id}'")
     try:
-        # 정규식에 \\? 를 추가하여 `[` 와 `\[` 를 모두 처리하도록 변경
         pattern = re.compile(
             r"(### \\?\[" + re.escape(request.uo_id) + r".*?\\?\]\n.*?)(?=### \\?\[U[A-Z]{2,3}\d{3}|\Z)",
             re.DOTALL
         )
         match = pattern.search(request.file_content)
         if not match:
-            # 오류 발생 시, 어떤 내용으로 검색했는지 로그에 남겨 디버깅을 돕도록 개선
             logger.error(f"Could not find UO block for ID '{request.uo_id}'. Searched content snippet: \n---\n{request.file_content[:500]}\n---")
             raise HTTPException(status_code=404, detail=f"Unit Operation block for ID '{request.uo_id}' not found.")
         
         uo_block = match.group(1)
-        # run_agent_team은 동기/CPU-bound 작업이므로 to_thread로 비동기 실행
         agent_result = await asyncio.to_thread(run_agent_team, request.query, uo_block, request.section)
         
         if not agent_result or not agent_result.get("options"):
@@ -424,7 +410,6 @@ async def populate_note(request: PopulateNoteRequest):
 async def record_preference(request: PreferenceRequest):
     logger.info(f"Recording DPO data for UO '{request.uo_id}' to Git repository.")
 
-    # --- Git 관련 환경 변수 로드 ---
     repo_url = os.getenv("DPO_TRAINER_REPO_URL")
     token = os.getenv("GIT_AUTH_TOKEN")
     local_path_str = os.getenv("DPO_REPO_LOCAL_PATH", "./labnote-dpo-trainer-data")
@@ -435,7 +420,6 @@ async def record_preference(request: PreferenceRequest):
         raise HTTPException(status_code=500, detail="DPO Git repository is not configured on the server.")
 
     try:
-        # --- 1. DPO 데이터 JSON 객체 생성 ---
         uo_name = ALL_UOS_DATA.get(request.uo_id, "Unknown Operation")
         uo_block_pattern = re.compile(r"(### \\?\[" + re.escape(request.uo_id) + r".*?\\?\]\n.*?)(?=### \\?\[U[A-Z]{2,3}\d{3}|\Z)", re.DOTALL)
         uo_match = uo_block_pattern.search(request.file_content)
@@ -468,8 +452,7 @@ async def record_preference(request: PreferenceRequest):
             }
         }
         
-        # --- 2. Git 리포지토리 클론 또는 업데이트 ---
-        repo_url_with_token = repo_url.replace("https://", f"https://{token}@")
+        repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
         
         if local_path.exists():
             repo = git.Repo(local_path)
@@ -479,7 +462,6 @@ async def record_preference(request: PreferenceRequest):
             logger.info(f"Cloning DPO repository to {local_path}...")
             repo = git.Repo.clone_from(repo_url_with_token, local_path)
 
-        # --- 3. JSON 파일 생성 및 저장 ---
         data_dir = local_path / "data"
         data_dir.mkdir(exist_ok=True)
         
@@ -491,7 +473,6 @@ async def record_preference(request: PreferenceRequest):
         
         logger.info(f"DPO data saved to {file_path}")
 
-        # --- 4. Git Add, Commit, Push ---
         repo.index.add([str(file_path)])
         commit_message = f"feat: Add DPO data for {request.uo_id}/{request.section}"
         repo.index.commit(commit_message)
@@ -511,15 +492,18 @@ async def record_preference(request: PreferenceRequest):
 
     return
 
+@app.post("/record_git_feedback", status_code=204)
+async def record_git_feedback(request: GitFeedbackRequest):
+    logger.info(f"Received finalized DPO data from Git for: {request.metadata.get('workflow_file')}")
+    # This endpoint is now deprecated in favor of /record_preference, but kept for potential future use.
+    pass
 
 @app.get("/constants", summary="Get All Workflows and Unit Operations")
 def get_constants():
-    """Returns the complete lists of all workflows and unit operations."""
     return {
         "ALL_WORKFLOWS": ALL_WORKFLOWS_DATA,
         "ALL_UOS": ALL_UOS_DATA
     }
-
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -556,7 +540,6 @@ async def chat(request: ChatRequest):
 
 @app.get("/clear_history/{conversation_id}", summary="Clear Conversation History")
 def clear_history(conversation_id: str):
-    """특정 대화 ID의 기록을 삭제합니다."""
     if conversation_id in conversation_histories:
         del conversation_histories[conversation_id]
         logger.info(f"Cleared conversation history for ID: {conversation_id}")
@@ -566,27 +549,4 @@ def clear_history(conversation_id: str):
 
 @app.get("/", summary="Health Check")
 def health_check():
-    """API 서버가 실행 중인지 확인하는 상태 체크 엔드포인트입니다."""
     return {"status": "ok", "version": app.version}
-
-# 아래 코드는 현재 사용x but 추후 랩노트 완성 후 커밋 때 dpo 수집으로 이용할 수 있어 남겨둠
-#@app.post("/record_git_feedback", status_code=204)
-#async def record_git_feedback(request: GitFeedbackRequest):
-    """
-    GitHub Action으로부터 최종 commit 기반 DPO 데이터를 수신하여 Redis에 저장합니다.
-    """
-    logger.info(f"Received finalized DPO data from Git for: {request.metadata.get('workflow_file')}")
-    r = redis.Redis(connection_pool=redis_pool)
-    try:
-        # 타임스탬프 추가
-        request.metadata["timestamp_unix"] = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        
-        key = f"dpo:git_finalized_preference:{uuid.uuid4()}"
-        await r.set(key, json.dumps(request.dict(), ensure_ascii=False))
-        
-        logger.info(f"Successfully saved finalized DPO data to Redis with key: {key}")
-        
-    except Exception as e:
-        logger.error(f"Error saving git feedback to Redis: {e}", exc_info=True)
-        # GitHub Action은 이 에러를 볼 수 없지만, 로깅은 중요합니다.
-        raise HTTPException(status_code=500, detail="Failed to save feedback to Redis.")
