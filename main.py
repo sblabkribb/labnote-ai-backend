@@ -473,7 +473,7 @@ async def record_preference(request: PreferenceRequest):
         
         logger.info(f"DPO data saved to {file_path}")
 
-        repo.index.add([str(file_path)])
+        repo.index.add([str(file_path.resolve())]) 
         commit_message = f"feat: Add DPO data for {request.uo_id}/{request.section}"
         repo.index.commit(commit_message)
         
