@@ -22,3 +22,6 @@ trl
 torch
 accelerate
 bitsandbytes
+
+# For Git Integration
+GitPython

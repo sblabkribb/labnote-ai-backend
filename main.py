@@ -422,23 +422,27 @@ async def populate_note(request: PopulateNoteRequest):
 
 @app.post("/record_preference", status_code=204)
 async def record_preference(request: PreferenceRequest):
-    logger.info(f"Recording DPO data for UO '{request.uo_id}' with full context.")
-    r = redis.Redis(connection_pool=redis_pool)
+    logger.info(f"Recording DPO data for UO '{request.uo_id}' to Git repository.")
+
+    # --- Git 관련 환경 변수 로드 ---
+    repo_url = os.getenv("DPO_TRAINER_REPO_URL")
+    token = os.getenv("GIT_AUTH_TOKEN")
+    local_path_str = os.getenv("DPO_REPO_LOCAL_PATH", "./labnote-dpo-trainer-data")
+    local_path = Path(local_path_str)
+    
+    if not repo_url or not token:
+        logger.error("Git repository URL or auth token is not configured in .env file.")
+        raise HTTPException(status_code=500, detail="DPO Git repository is not configured on the server.")
+
     try:
-        await r.ping()
+        # --- 1. DPO 데이터 JSON 객체 생성 ---
         uo_name = ALL_UOS_DATA.get(request.uo_id, "Unknown Operation")
-
-        # 1. 파일 경로에서 컨텍스트 정보 추출
-        path_parts = request.file_path.replace("\\", "/").split("/")
-        experiment_folder = path_parts[-2] if len(path_parts) > 1 else "unknown_experiment"
-        workflow_file = path_parts[-1] if path_parts else "unknown_workflow"
-
-        # 2. 프롬프트 재구성 (기존과 동일)
-        uo_block_pattern = re.compile(r"(### \[" + re.escape(request.uo_id) + r".*?\n.*?)(?=### \[U[A-Z]{2,3}\d{3}|\Z)", re.DOTALL)
+        uo_block_pattern = re.compile(r"(### \\?\[" + re.escape(request.uo_id) + r".*?\\?\]\n.*?)(?=### \\?\[U[A-Z]{2,3}\d{3}|\Z)", re.DOTALL)
         uo_match = uo_block_pattern.search(request.file_content)
         uo_block_content = uo_match.group(1) if uo_match else ""
         input_context = _extract_section_content(uo_block_content, "Input")
         output_context = _extract_section_content(uo_block_content, "Output")
+        
         prompt = (
             f"Given the experimental context, write the '{request.section}' section for the Unit Operation '{request.uo_id}: {uo_name}'.\n"
             f"- Overall Goal: {request.query}\n"
@@ -447,35 +451,66 @@ async def record_preference(request: PreferenceRequest):
             f"- The initial AI suggestion was: {request.chosen_original}"
         )
 
-        # 3. Redis에 저장할 최종 데이터 구성
+        path_parts = request.file_path.replace("\\", "/").split("/")
+        
         preference_data = {
             "prompt": prompt,
             "chosen": request.chosen_edited,
             "rejected": [request.chosen_original] + request.rejected,
             "metadata": {
-                "experiment_folder": experiment_folder,
-                "workflow_file": workflow_file,
+                "source": "vscode_extension_feedback",
+                "experiment_folder": path_parts[-2] if len(path_parts) > 1 else "unknown_experiment",
+                "workflow_file": path_parts[-1] if path_parts else "unknown_workflow",
                 "unit_operation_id": request.uo_id,
                 "section": request.section,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                # Supervisor 평가 결과 저장
+                "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "supervisor_evaluations": request.supervisor_evaluations
             }
         }
-
-        key = f"dpo:preference:{uuid.uuid4()}"
-        await r.set(key, json.dumps(preference_data, ensure_ascii=False))
         
-        logger.info(f"Successfully recorded DPO data with full context to Redis: {key}")
+        # --- 2. Git 리포지토리 클론 또는 업데이트 ---
+        repo_url_with_token = repo_url.replace("https://", f"https://{token}@")
+        
+        if local_path.exists():
+            repo = git.Repo(local_path)
+            logger.info("Pulling latest changes from DPO repository...")
+            repo.remotes.origin.pull()
+        else:
+            logger.info(f"Cloning DPO repository to {local_path}...")
+            repo = git.Repo.clone_from(repo_url_with_token, local_path)
 
-    except redis.exceptions.ConnectionError as e:
-        logger.error(f"Redis connection error: {e}", exc_info=True)
-        raise HTTPException(status_code=503, detail="Could not connect to Redis to record preference.")
+        # --- 3. JSON 파일 생성 및 저장 ---
+        data_dir = local_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        
+        file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
+        file_path = data_dir / file_name
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(preference_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"DPO data saved to {file_path}")
+
+        # --- 4. Git Add, Commit, Push ---
+        repo.index.add([str(file_path)])
+        commit_message = f"feat: Add DPO data for {request.uo_id}/{request.section}"
+        repo.index.commit(commit_message)
+        
+        logger.info("Pushing DPO data to remote repository...")
+        origin = repo.remote(name='origin')
+        origin.push()
+        
+        logger.info(f"Successfully recorded and pushed DPO data to Git.")
+
+    except git.exc.GitCommandError as e:
+        logger.error(f"Git command failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to push DPO data to Git repository: {e.stderr}")
     except Exception as e:
-        logger.error(f"Error recording preference: {e}", exc_info=True)
+        logger.error(f"Error recording preference to Git: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred while recording preference.")
-    
+
     return
+
 
 @app.get("/constants", summary="Get All Workflows and Unit Operations")
 def get_constants():
@@ -534,8 +569,9 @@ def health_check():
     """API 서버가 실행 중인지 확인하는 상태 체크 엔드포인트입니다."""
     return {"status": "ok", "version": app.version}
 
-@app.post("/record_git_feedback", status_code=204)
-async def record_git_feedback(request: GitFeedbackRequest):
+# 아래 코드는 현재 사용x but 추후 랩노트 완성 후 커밋 때 dpo 수집으로 이용할 수 있어 남겨둠
+#@app.post("/record_git_feedback", status_code=204)
+#async def record_git_feedback(request: GitFeedbackRequest):
     """
     GitHub Action으로부터 최종 commit 기반 DPO 데이터를 수신하여 Redis에 저장합니다.
     """
