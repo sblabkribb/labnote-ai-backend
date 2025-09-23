@@ -22,6 +22,9 @@ from rag_pipeline import rag_pipeline
 from agents import run_agent_team
 from llm_utils import call_llm_api
 
+# embedding
+from rag_pipeline import get_embeddings
+
 # .env 파일 로드 및 로깅 설정
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -550,3 +553,20 @@ def clear_history(conversation_id: str):
 @app.get("/", summary="Health Check")
 def health_check():
     return {"status": "ok", "version": app.version}
+
+@app.get("/health")
+def health_check():
+    """
+    주기적으로 호출하여 GPU를 활성 상태로 유지하고 서버 상태를 확인합니다.
+    """
+    try:
+        # 1단계에서 만든 함수를 호출하여 임베딩 모델을 가져옵니다.
+        embeddings = get_embeddings()
+        
+        # 간단한 텍스트를 임베딩하여 GPU에 작업을 시킵니다.
+        embeddings.embed_query("health check")
+        
+        return {"status": "ok", "message": "GPU is warm and ready."}
+    except Exception as e:
+        # 오류 발생 시 500 에러와 함께 상세 내용을 반환합니다.
+        raise HTTPException(status_code=500, detail=str(e))

@@ -111,5 +111,11 @@ class RAGPipeline:
 
 rag_pipeline = RAGPipeline()
 
-    
+def get_embeddings():
+    """
+    초기화된 RAGPipeline 인스턴스에서 임베딩 모델 객체를 반환합니다.
+    """
+    if not rag_pipeline or not rag_pipeline.embeddings:
+        raise RuntimeError("RAG pipeline or embeddings not initialized.")
+    return rag_pipeline.embeddings    
 
