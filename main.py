@@ -482,6 +482,9 @@ async def record_preference(request: PreferenceRequest):
     local_path_str = os.getenv("DPO_REPO_LOCAL_PATH", "./labnote-dpo-trainer-data")
     local_path = Path(local_path_str)
     
+    print(f"DEBUG: GIT_AUTH_TOKEN from os.getenv is: '{token}'")
+    logger.info(f"DEBUG: Attempting to use GIT_AUTH_TOKEN: '{token}'")
+    
     if not repo_url or not token:
         logger.error("Git repository URL or auth token is not configured in .env file.")
         raise HTTPException(status_code=500, detail="DPO Git repository is not configured on the server.")
