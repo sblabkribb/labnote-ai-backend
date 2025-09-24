@@ -9,7 +9,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
 # Local imports
-from rag_pipeline import rag_pipeline
+import rag_pipeline as rag_module
 from llm_utils import call_llm_api
 
 # Configure logging
@@ -56,8 +56,8 @@ async def _generate_drafts(state: AgentState) -> AgentState:
     input_context = _extract_section_content(uo_block, "Input")
     rag_query = f"Find the specific procedure or list of items for the '{section}' section of the unit operation '{uo_id}: {uo_name}' related to the experiment: {query}"
 
-    context_docs = rag_pipeline.retrieve_context(rag_query, k=3)
-    rag_context = rag_pipeline.format_context_for_prompt(context_docs)
+    context_docs = rag_module.rag_pipeline.retrieve_context(rag_query, k=3)
+    rag_context = rag_module.rag_pipeline.format_context_for_prompt(context_docs)
 
     base_user_prompt = f"""
 - **Experiment Goal**: '{query}'

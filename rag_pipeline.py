@@ -2,6 +2,7 @@ import os
 import logging
 from typing import List, Optional
 from dotenv import load_dotenv
+import redis
 
 from langchain_community.vectorstores.redis import Redis
 from langchain_community.document_loaders import DirectoryLoader, UnstructuredMarkdownLoader
@@ -59,7 +60,7 @@ class RAGPipeline:
         """
         try:
             # 먼저 Redis 클라이언트로 인덱스가 존재하는지 직접 확인합니다.
-            client = Redis.from_url(self.redis_url)
+            client = redis.from_url(self.redis_url)
             client.ping() # 연결 확인
             
             # 인덱스 정보를 조회하여 존재 여부를 확인
@@ -109,13 +110,14 @@ class RAGPipeline:
             context_parts.append(f"--- CONTEXT FROM: {source} ---\n{doc.page_content}")
         return "\n\n".join(context_parts)
 
-rag_pipeline = RAGPipeline()
+# ⭐️ [수정] 모듈 로드 시 객체가 바로 생성되지 않도록 변경합니다.
+# 대신, main.py의 lifespan에서 필요할 때 생성합니다.
+rag_pipeline: Optional[RAGPipeline] = None
 
 def get_embeddings():
     """
     초기화된 RAGPipeline 인스턴스에서 임베딩 모델 객체를 반환합니다.
     """
-    if not rag_pipeline or not rag_pipeline.embeddings:
+    if rag_pipeline is None or rag_pipeline.embeddings is None:
         raise RuntimeError("RAG pipeline or embeddings not initialized.")
     return rag_pipeline.embeddings    
-

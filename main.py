@@ -23,7 +23,7 @@ import git
 from fastapi.middleware.cors import CORSMiddleware 
 
 # Local imports
-from rag_pipeline import rag_pipeline
+import rag_pipeline as rag_module
 from agents import run_agent_team
 from llm_utils import call_llm_api
 
@@ -233,13 +233,17 @@ async def lifespan(app: FastAPI):
     if not redis_url:
         raise ValueError("REDIS_URL environment variable is not set.")
     logger.info(f"Creating Redis connection pool for {redis_url}")
+    
+    # ⭐️ [수정] 서버 시작 시 RAG 파이프라인을 초기화합니다.
+    logger.info("Initializing RAG pipeline...")
+    rag_module.rag_pipeline = rag_module.RAGPipeline()
+    
     redis_pool = redis.ConnectionPool.from_url(redis_url, decode_responses=True)
     logger.info("Starting background task to keep GPU warm...")
     asyncio.create_task(keep_gpu_warm())
     yield
     logger.info("Closing Redis connection pool.")
-    if redis_pool:
-        await redis_pool.disconnect()
+    await redis_pool.disconnect()
 
 # FastAPI 앱 초기화
 app = FastAPI(
