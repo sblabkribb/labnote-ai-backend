@@ -48,9 +48,9 @@ async def test_run_evaluation_pipeline(tmp_path):
             })
         return "Unknown model response"
 
-    # 'scripts.evaluate_model.call_llm_api'를 모킹
+    # 'evaluate_model.call_llm_api'를 모킹 (sys.path 추가로 인해 모듈 이름이 'evaluate_model'이 됨)
     # AsyncMock을 사용하여 비동기 함수를 모킹
-    with patch('scripts.evaluate_model.call_llm_api', new_callable=AsyncMock) as mock_call_llm_api:
+    with patch('evaluate_model.call_llm_api', new_callable=AsyncMock) as mock_call_llm_api:
         mock_call_llm_api.side_effect = mock_llm_api_side_effect
 
         # 3. 테스트 대상 함수 실행

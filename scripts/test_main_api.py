@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
-import json
+from unittest.mock import patch, MagicMock
+import datetime
 import sqlite3
 import os
 
@@ -53,20 +53,28 @@ def test_get_feedback_metrics_with_date_filter(client: TestClient):
     """
     /api/feedback_metrics의 날짜 필터링 기능 테스트
     """
-    with patch('main.git.Repo'):
+    # 'datetime.datetime.now'를 모킹하여 시간을 고정
+    mock_now = MagicMock()
+    with patch('main.git.Repo'), patch('main.datetime.datetime', new=mock_now):
+        # 1. 2023년 데이터 삽입
+        mock_now.now.return_value = datetime.datetime(2023, 6, 15, 10, 0, 0, tzinfo=datetime.timezone.utc)
         # 테스트 데이터 2개 삽입
         client.post("/record_preference", json={
             "uo_id": "UHW010", "section": "Method", "chosen_original": "a", "chosen_edited": "b",
             "rejected": [], "query": "q", "file_content": "c", "file_path": "f", "supervisor_evaluations": []
         })
-        # 두 번째 요청은 다른 날짜에 발생한 것처럼 가정하기 위해 DB 직접 수정
-        with sqlite3.connect(TEST_DB_PATH) as conn:
-            conn.execute("UPDATE feedback_metrics SET timestamp = '2023-01-01T12:00:00Z' WHERE id = 1")
-
+        
+        # 2. 2024년 데이터 삽입
+        mock_now.now.return_value = datetime.datetime(2024, 8, 20, 10, 0, 0, tzinfo=datetime.timezone.utc)
         client.post("/record_preference", json={
             "uo_id": "UHW020", "section": "Reagent", "chosen_original": "c", "chosen_edited": "d",
             "rejected": [], "query": "q", "file_content": "c", "file_path": "f", "supervisor_evaluations": []
         })
+
+        # DB에 데이터가 2개 들어갔는지 확인 (선택적)
+        with sqlite3.connect(TEST_DB_PATH) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM feedback_metrics").fetchone()[0]
+            assert count == 2
 
     # 1. 필터링 없이 전체 조회
     response = client.get("/api/feedback_metrics")
@@ -82,7 +90,7 @@ def test_get_feedback_metrics_with_date_filter(client: TestClient):
     response = client.get("/api/feedback_metrics?end_date=2023-12-31")
     data = response.json()
     assert len(data) == 1
-    assert data[0]["uo_id"] == "UHW010"
+    assert data[0]["uo_id"] == "UHW010" # 2023년 데이터만 나와야 함
 
     # 4. 기간 필터링 (결과 없음)
     response = client.get("/api/feedback_metrics?start_date=2025-01-01")
