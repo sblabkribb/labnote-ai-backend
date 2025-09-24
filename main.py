@@ -479,6 +479,7 @@ async def record_preference(request: PreferenceRequest):
 
     repo_url = os.getenv("DPO_TRAINER_REPO_URL")
     token = os.getenv("GIT_AUTH_TOKEN")
+    logger.info(f"DEBUG: Attempting to use GIT_AUTH_TOKEN: '{token}'") # <-- ADD THIS LINE
     local_path_str = os.getenv("DPO_REPO_LOCAL_PATH", "./labnote-dpo-trainer-data")
     local_path = Path(local_path_str)
     
