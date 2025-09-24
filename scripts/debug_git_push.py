@@ -3,6 +3,12 @@ import git
 from pathlib import Path
 import uuid
 import logging
+from dotenv import load_dotenv # <-- 이 줄을 추가하세요
+
+# 스크립트가 실행될 때 .env 파일을 로드합니다.
+# 스크립트는 scripts/ 안에 있으므로, 부모 디렉토리의 .env 파일을 찾도록 경로를 지정합니다.
+dotenv_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=dotenv_path) # <-- 이 줄을 추가하세요
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,10 +22,16 @@ def test_git_push():
     local_path = Path(local_path_str)
 
     logger.info(f"--- Git Push Debug Test ---")
-    logger.info(f"Attempting to use GIT_AUTH_TOKEN: '{token[:4]}...{token[-4:] if token else 'None'}'") # 토큰 일부만 로깅
 
-    if not repo_url or not token:
-        logger.error("Error: DPO_TRAINER_REPO_URL or GIT_AUTH_TOKEN is not set.")
+    # 토큰이 None이 아닌지 먼저 확인합니다.
+    if not token:
+        logger.error("❌ FAILED: GIT_AUTH_TOKEN not found in environment. Please check your .env file.")
+        return
+
+    logger.info(f"Attempting to use GIT_AUTH_TOKEN: '{token[:4]}...{token[-4:]}'") # 토큰 일부만 로깅
+
+    if not repo_url:
+        logger.error("Error: DPO_TRAINER_REPO_URL is not set.")
         return
 
     repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
