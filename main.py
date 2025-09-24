@@ -8,13 +8,17 @@ import re
 import asyncio
 import json
 import redis.asyncio as redis
+import sqlite3, datetime
 import ollama
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from pathlib import Path
+from rapidfuzz import fuzz
 import git
 from fastapi.middleware.cors import CORSMiddleware 
 
@@ -234,6 +238,10 @@ app.add_middleware(
     allow_headers=["*"],  # 모든 HTTP 헤더 허용
 )
 
+# --- 템플릿 설정 ---
+templates_dir = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(templates_dir))
+
 # --- Pydantic 모델 정의 ---
 conversation_histories: Dict[str, List[Dict[str, str]]] = {}
 
@@ -325,6 +333,28 @@ def _extract_section_content(uo_block: str, section_name: str) -> str:
         content = match.group(1).strip()
         return content if content and not content.startswith('(') else "(not specified)"
     return "(not specified)"
+
+def _init_feedback_db():
+    """
+    피드백 지표를 저장하기 위한 SQLite 데이터베이스와 테이블을 초기화합니다.
+    이 함수는 서버 시작 시 또는 첫 피드백 기록 시 호출될 수 있습니다.
+    """
+    db_path = os.getenv("EVALUATION_DB_PATH", "scripts/evaluation_results.db")
+    # scripts 디렉토리가 없으면 생성
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS feedback_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                uo_id TEXT NOT NULL,
+                section TEXT NOT NULL,
+                edit_distance_ratio REAL NOT NULL
+            )
+        """)
+        logger.info(f"Feedback metrics table initialized in '{db_path}'")
+
 
 # --- API 엔드포인트 ---
 
@@ -441,6 +471,9 @@ async def record_preference(request: PreferenceRequest):
         output_context = _extract_section_content(uo_block_content, "Output")
         
         prompt = (
+            # ⭐️ 프롬프트 개선: 사용자가 수정한 최종본(chosen_edited)을 직접적으로 요청하는 대신,
+            # 컨텍스트를 기반으로 최상의 내용을 작성하도록 유도하는 것이 DPO 학습에 더 효과적일 수 있습니다.
+            # 아래는 기존 프롬프트를 유지하되, 컨텍스트를 보강하는 방향으로 제안합니다.
             f"Given the experimental context, write the '{request.section}' section for the Unit Operation '{request.uo_id}: {uo_name}'.\n"
             f"- Overall Goal: {request.query}\n"
             f"- Starting Materials (Input): {input_context}\n"
@@ -449,6 +482,9 @@ async def record_preference(request: PreferenceRequest):
         )
 
         path_parts = request.file_path.replace("\\", "/").split("/")
+        
+        # ⭐️ 성능 지표 추가: 편집 거리(Normalized Levenshtein Distance) 계산
+        edit_distance_ratio = fuzz.ratio(request.chosen_original, request.chosen_edited) / 100.0
         
         preference_data = {
             "prompt": prompt,
@@ -461,9 +497,24 @@ async def record_preference(request: PreferenceRequest):
                 "unit_operation_id": request.uo_id,
                 "section": request.section,
                 "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "supervisor_evaluations": request.supervisor_evaluations
+                "supervisor_evaluations": request.supervisor_evaluations,
+                "edit_distance_ratio": edit_distance_ratio # 0.0 (완전 다름) ~ 1.0 (완전 동일)
             }
         }
+
+        # ⭐️ 성능 지표 DB 저장 로직 추가
+        try:
+            _init_feedback_db() # 테이블이 없으면 생성
+            db_path = os.getenv("EVALUATION_DB_PATH", "scripts/evaluation_results.db")
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO feedback_metrics (timestamp, uo_id, section, edit_distance_ratio) VALUES (?, ?, ?, ?)",
+                    (preference_data["metadata"]["timestamp_utc"], request.uo_id, request.section, edit_distance_ratio)
+                )
+            logger.info(f"Saved edit_distance_ratio ({edit_distance_ratio:.2f}) to DB for {request.uo_id}/{request.section}")
+        except Exception as db_error:
+            logger.error(f"Failed to save feedback metric to DB: {db_error}", exc_info=True)
         
         repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
         
@@ -580,3 +631,86 @@ def health_check():
     except Exception as e:
         # 오류 발생 시 500 에러와 함께 상세 내용을 반환합니다.
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/evaluation_history", summary="Get Model Evaluation History")
+def get_evaluation_history(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """SQLite DB에서 모든 모델 평가 이력을 조회하여 JSON으로 반환합니다."""
+    db_path = os.getenv("EVALUATION_DB_PATH", "scripts/evaluation_results.db")
+    if not os.path.exists(db_path):
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            query = "SELECT * FROM evaluations"
+            params = []
+            conditions = []
+
+            if start_date:
+                conditions.append("timestamp >= ?")
+                params.append(start_date)
+            if end_date:
+                # 날짜의 끝까지 포함하기 위해 시간 추가
+                conditions.append("timestamp <= ?")
+                params.append(f"{end_date}T23:59:59.999999")
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            
+            query += " ORDER BY timestamp ASC"
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching evaluation history from DB: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch evaluation history.")
+
+@app.get("/dashboard", response_class=HTMLResponse, summary="View Model Performance Dashboard")
+async def view_dashboard(request: Request):
+    """
+    모델 성능 평가 대시보드 페이지를 렌더링합니다.
+    이 페이지는 /api/evaluation_history 엔드포인트에서 데이터를 가져와 차트를 그립니다.
+    """
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+@app.get("/api/feedback_metrics", summary="Get User Feedback Metrics History")
+def get_feedback_metrics(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    """SQLite DB에서 모든 사용자 피드백 지표(edit_distance_ratio) 이력을 조회하여 JSON으로 반환합니다."""
+    db_path = os.getenv("EVALUATION_DB_PATH", "scripts/evaluation_results.db")
+    if not os.path.exists(db_path):
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            query = "SELECT * FROM feedback_metrics"
+            params = []
+            conditions = []
+
+            if start_date:
+                conditions.append("timestamp >= ?")
+                params.append(start_date)
+            if end_date:
+                conditions.append("timestamp <= ?")
+                params.append(f"{end_date}T23:59:59.999999")
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            
+            query += " ORDER BY timestamp ASC"
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching feedback metrics from DB: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch feedback metrics.")
