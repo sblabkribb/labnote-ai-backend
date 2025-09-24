@@ -211,14 +211,16 @@ redis_pool = None
 async def keep_gpu_warm():
     """5분(300초)마다 임베딩 연산을 수행하여 GPU를 활성 상태로 유지합니다."""
     while True:
+        # ⭐️ 개선점: 가장 크고 중요한 llama3:70b 모델을 메모리에 유지하도록 변경합니다.
+        # 이렇게 하면 모델을 계속해서 로드/언로드하는 것을 방지할 수 있습니다.
         try:
             logger.info("[Keep-Alive] Running scheduled GPU health check...")
-            embeddings = get_embeddings()
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None, embeddings.embed_query, "health check"
+            await ollama.AsyncClient().chat(
+                model='llama3:70b',
+                messages=[{'role': 'user', 'content': 'Health check. Respond with "OK".'}],
+                options={'num_predict': 1} # 최소한의 작업만 수행
             )
-            logger.info("[Keep-Alive] Successfully kept GPU warm.")
+            logger.info("[Keep-Alive] Successfully kept llama3:70b model warm.")
         except Exception as e:
             logger.error(f"[Keep-Alive] Error during GPU health check: {e}", exc_info=True)
         
