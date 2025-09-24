@@ -473,24 +473,56 @@ async def populate_note(request: PopulateNoteRequest):
         logger.error(f"Error populating note: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error populating note: {e}")
 
+# Git 작업을 처리할 새로운 동기 함수
+def _run_git_operations(token: str, repo_url: str, local_path_str: str, preference_data: dict, commit_message: str):
+    """Git 작업을 동기적으로 처리하는 헬퍼 함수"""
+    local_path = Path(local_path_str)
+    repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
+
+    if local_path.exists():
+        repo = git.Repo(local_path)
+        logger.info("Pulling latest changes from DPO repository...")
+        repo.remotes.origin.pull()
+    else:
+        logger.info(f"Cloning DPO repository to {local_path}...")
+        repo = git.Repo.clone_from(repo_url_with_token, local_path)
+
+    data_dir = local_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    
+    file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
+    file_path = data_dir / file_name
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(preference_data, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"DPO data saved to {file_path}")
+
+    repo.index.add([str(file_path.resolve())])
+    repo.index.commit(commit_message)
+    
+    logger.info("Pushing DPO data to remote repository...")
+    origin = repo.remote(name='origin')
+    origin.push()
+    logger.info("Successfully pushed DPO data to Git.")
+
 @app.post("/record_preference", status_code=204)
 async def record_preference(request: PreferenceRequest):
     logger.info(f"Recording DPO data for UO '{request.uo_id}' to Git repository.")
 
     repo_url = os.getenv("DPO_TRAINER_REPO_URL")
     token = os.getenv("GIT_AUTH_TOKEN")
-    logger.info(f"DEBUG: Attempting to use GIT_AUTH_TOKEN: '{token}'") # <-- ADD THIS LINE
     local_path_str = os.getenv("DPO_REPO_LOCAL_PATH", "./labnote-dpo-trainer-data")
-    local_path = Path(local_path_str)
     
-    print(f"DEBUG: GIT_AUTH_TOKEN from os.getenv is: '{token}'")
-    logger.info(f"DEBUG: Attempting to use GIT_AUTH_TOKEN: '{token}'")
-    
+    # 디버깅 로그 추가
+    logger.info(f"DEBUG: Attempting to use GIT_AUTH_TOKEN: '{token[:4]}...{token[-4:] if token else 'None'}'")
+
     if not repo_url or not token:
         logger.error("Git repository URL or auth token is not configured in .env file.")
         raise HTTPException(status_code=500, detail="DPO Git repository is not configured on the server.")
 
     try:
+        # preference_data 생성 로직 (기존과 동일)
         uo_name = ALL_UOS_DATA.get(request.uo_id, "Unknown Operation")
         uo_block_pattern = re.compile(r"(### \\?\[" + re.escape(request.uo_id) + r".*?\\?\]\n.*?)(?=### \\?\[U[A-Z]{2,3}\d{3}|\Z)", re.DOTALL)
         uo_match = uo_block_pattern.search(request.file_content)
@@ -499,9 +531,6 @@ async def record_preference(request: PreferenceRequest):
         output_context = _extract_section_content(uo_block_content, "Output")
         
         prompt = (
-            # ⭐️ 프롬프트 개선: 사용자가 수정한 최종본(chosen_edited)을 직접적으로 요청하는 대신,
-            # 컨텍스트를 기반으로 최상의 내용을 작성하도록 유도하는 것이 DPO 학습에 더 효과적일 수 있습니다.
-            # 아래는 기존 프롬프트를 유지하되, 컨텍스트를 보강하는 방향으로 제안합니다.
             f"Given the experimental context, write the '{request.section}' section for the Unit Operation '{request.uo_id}: {uo_name}'.\n"
             f"- Overall Goal: {request.query}\n"
             f"- Starting Materials (Input): {input_context}\n"
@@ -510,8 +539,6 @@ async def record_preference(request: PreferenceRequest):
         )
 
         path_parts = request.file_path.replace("\\", "/").split("/")
-        
-        # ⭐️ 성능 지표 추가: 편집 거리(Normalized Levenshtein Distance) 계산
         edit_distance_ratio = fuzz.ratio(request.chosen_original, request.chosen_edited) / 100.0
         
         preference_data = {
@@ -526,13 +553,13 @@ async def record_preference(request: PreferenceRequest):
                 "section": request.section,
                 "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "supervisor_evaluations": request.supervisor_evaluations,
-                "edit_distance_ratio": edit_distance_ratio # 0.0 (완전 다름) ~ 1.0 (완전 동일)
+                "edit_distance_ratio": edit_distance_ratio
             }
         }
 
-        # ⭐️ 성능 지표 DB 저장 로직 추가
+        # DB 저장 로직 (기존과 동일)
         try:
-            _init_feedback_db() # 테이블이 없으면 생성
+            _init_feedback_db()
             db_path = os.getenv("EVALUATION_DB_PATH", "scripts/evaluation_results.db")
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
@@ -543,37 +570,18 @@ async def record_preference(request: PreferenceRequest):
             logger.info(f"Saved edit_distance_ratio ({edit_distance_ratio:.2f}) to DB for {request.uo_id}/{request.section}")
         except Exception as db_error:
             logger.error(f"Failed to save feedback metric to DB: {db_error}", exc_info=True)
-        
-        repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
-        
-        if local_path.exists():
-            repo = git.Repo(local_path)
-            logger.info("Pulling latest changes from DPO repository...")
-            repo.remotes.origin.pull()
-        else:
-            logger.info(f"Cloning DPO repository to {local_path}...")
-            repo = git.Repo.clone_from(repo_url_with_token, local_path)
 
-        data_dir = local_path / "data"
-        data_dir.mkdir(exist_ok=True)
-        
-        file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
-        file_path = data_dir / file_name
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(preference_data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"DPO data saved to {file_path}")
-
-        repo.index.add([str(file_path.resolve())]) 
         commit_message = f"feat: Add DPO data for {request.uo_id}/{request.section}"
-        repo.index.commit(commit_message)
         
-        logger.info("Pushing DPO data to remote repository...")
-        origin = repo.remote(name='origin')
-        origin.push()
-        
-        logger.info(f"Successfully recorded and pushed DPO data to Git.")
+        # 수정: asyncio.to_thread를 사용하여 동기 함수를 별도 스레드에서 실행
+        await asyncio.to_thread(
+            _run_git_operations,
+            token,
+            repo_url,
+            local_path_str,
+            preference_data,
+            commit_message
+        )
 
     except git.exc.GitCommandError as e:
         logger.error(f"Git command failed: {e}", exc_info=True)
@@ -581,8 +589,10 @@ async def record_preference(request: PreferenceRequest):
     except Exception as e:
         logger.error(f"Error recording preference to Git: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred while recording preference.")
-
+    
     return
+
+
 
 @app.post("/record_git_feedback", status_code=204)
 async def record_git_feedback(request: GitFeedbackRequest):
