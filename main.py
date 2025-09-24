@@ -208,6 +208,22 @@ ALL_UOS_DATA, ALL_WORKFLOWS_DATA = _precompute_data()
 # --- Redis 연결 관리 (RAG 파이프라인 전용) ---
 redis_pool = None
 
+async def keep_gpu_warm():
+    """5분(300초)마다 임베딩 연산을 수행하여 GPU를 활성 상태로 유지합니다."""
+    while True:
+        try:
+            logger.info("[Keep-Alive] Running scheduled GPU health check...")
+            embeddings = get_embeddings()
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, embeddings.embed_query, "health check"
+            )
+            logger.info("[Keep-Alive] Successfully kept GPU warm.")
+        except Exception as e:
+            logger.error(f"[Keep-Alive] Error during GPU health check: {e}", exc_info=True)
+        
+        await asyncio.sleep(300)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_pool
@@ -216,6 +232,8 @@ async def lifespan(app: FastAPI):
         raise ValueError("REDIS_URL environment variable is not set.")
     logger.info(f"Creating Redis connection pool for {redis_url}")
     redis_pool = redis.ConnectionPool.from_url(redis_url, decode_responses=True)
+    logger.info("Starting background task to keep GPU warm...")
+    asyncio.create_task(keep_gpu_warm())
     yield
     logger.info("Closing Redis connection pool.")
     if redis_pool:
@@ -615,22 +633,22 @@ def clear_history(conversation_id: str):
 def health_check():
     return {"status": "ok", "version": app.version}
 
-@app.get("/health")
+@app.get("/health", summary="GPU Health Check")
 def health_check():
     """
     주기적으로 호출하여 GPU를 활성 상태로 유지하고 서버 상태를 확인합니다.
+    (이제 이 엔드포인트는 수동 확인용이며, 실제 Keep-Alive는 백그라운드 작업이 수행합니다.)
     """
     try:
-        # 1단계에서 만든 함수를 호출하여 임베딩 모델을 가져옵니다.
         embeddings = get_embeddings()
-        
-        # 간단한 텍스트를 임베딩하여 GPU에 작업을 시킵니다.
         embeddings.embed_query("health check")
-        
         return {"status": "ok", "message": "GPU is warm and ready."}
     except Exception as e:
-        # 오류 발생 시 500 에러와 함께 상세 내용을 반환합니다.
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/", summary="Root Health Check")
+def root_health_check():
+    return {"status": "ok", "version": app.version}
 
 @app.get("/api/evaluation_history", summary="Get Model Evaluation History")
 def get_evaluation_history(
