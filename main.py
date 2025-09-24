@@ -481,12 +481,17 @@ def _run_git_operations(token: str, repo_url: str, local_path_str: str, preferen
 
     if local_path.exists():
         repo = git.Repo(local_path)
+        # git pull 시 rebase 하도록 설정 추가
+        with repo.config_writer() as git_config:
+            git_config.set_value('pull', 'rebase', 'true')
         logger.info("Pulling latest changes from DPO repository...")
         repo.remotes.origin.pull()
     else:
         logger.info(f"Cloning DPO repository to {local_path}...")
         repo = git.Repo.clone_from(repo_url_with_token, local_path)
-
+        # 새로 클론한 저장소에도 rebase 설정 추가
+        with repo.config_writer() as git_config:
+            git_config.set_value('pull', 'rebase', 'true')
     data_dir = local_path / "data"
     data_dir.mkdir(exist_ok=True)
     
