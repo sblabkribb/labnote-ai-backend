@@ -491,9 +491,7 @@ def _run_git_operations(token: str, repo_url: str, local_path_str: str, preferen
         git_config.set_value('user', 'name', 'LabNote AI Bot')
         git_config.set_value('pull', 'rebase', 'true')
 
-    logger.info("Pulling latest changes from DPO repository...")
-    repo.remotes.origin.pull()
-    
+    # DPO 데이터를 파일에 먼저 저장하고 커밋합니다.
     data_dir = local_path / "data"
     data_dir.mkdir(exist_ok=True)
     
@@ -507,7 +505,12 @@ def _run_git_operations(token: str, repo_url: str, local_path_str: str, preferen
 
     repo.index.add([str(file_path.resolve())])
     repo.index.commit(commit_message)
+
+    # 그 다음 원격 저장소의 변경사항을 pull (rebase) 합니다.
+    logger.info("Pulling latest changes from DPO repository...")
+    repo.remotes.origin.pull()
     
+    # 최종 변경사항을 push 합니다.
     logger.info("Pushing DPO data to remote repository...")
     origin = repo.remote(name='origin')
     origin.push()
