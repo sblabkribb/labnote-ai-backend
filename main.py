@@ -475,58 +475,52 @@ async def populate_note(request: PopulateNoteRequest):
 
 # Git 작업을 처리할 새로운 동기 함수
 def _run_git_operations(token: str, repo_url: str, local_path_str: str, preference_data: dict, commit_message: str):
-    """Git 작업을 동기적으로 처리하는 헬퍼 함수"""
-    # 1. 파일 경로 및 Git 저장소 설정
+    """
+    Git 작업을 안정적으로 처리하는 동기 헬퍼 함수
+    (원격 저장소 기준으로 로컬을 초기화하여 충돌을 방지)
+    """
     local_path = Path(local_path_str)
     repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
-    
-    file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
-    data_dir = local_path / "data"
-    file_path = data_dir / file_name
 
+    # 1. 저장소 클론 또는 열기
     if local_path.exists():
         repo = git.Repo(local_path)
     else:
         logger.info(f"Cloning DPO repository to {local_path}...")
         repo = git.Repo.clone_from(repo_url_with_token, local_path)
 
-    with repo.config_writer() as git_config:
-        git_config.set_value('user', 'email', 'labnote-ai@example.com')
-        git_config.set_value('user', 'name', 'LabNote AI Bot')
-        git_config.set_value('pull', 'rebase', 'true')
+    origin = repo.remote(name='origin')
+    origin.set_url(repo_url_with_token)
+    
+    # 2. Rebase 등 비정상 상태일 경우 초기화
+    if repo.is_dirty() or "rebase" in repo.git.status():
+        logger.warning("Repository is in a dirty or rebase state. Resetting to origin/main...")
+        repo.git.rebase('--abort') # 진행중인 rebase 중단
+        repo.git.reset('--hard', 'origin/main')
+        
+    # 3. 원격 저장소의 최신 변경 사항을 가져옴
+    logger.info("Fetching latest changes from DPO repository...")
+    origin.fetch()
 
+    # 4. 로컬 main 브랜치를 원격 main 브랜치와 강제로 동기화
+    logger.info("Resetting local branch to match the remote branch...")
+    repo.git.reset('--hard', 'origin/main') # 또는 origin/master
 
-    # DPO 데이터를 파일에 먼저 저장하고 커밋합니다.
+    # 5. 새로운 DPO 데이터 파일 생성
     data_dir = local_path / "data"
     data_dir.mkdir(exist_ok=True)
-
-    # 2. 새로운 DPO 데이터 파일 생성
+    file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
+    file_path = data_dir / file_name
+    
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(preference_data, f, ensure_ascii=False, indent=2)
     logger.info(f"DPO data saved to {file_path}")
 
-    # 3. Git Stash를 사용하여 충돌 방지
-    logger.info("Stashing local changes before pulling...")
-    repo.git.stash('push', '-u', '-m', f'autostash before DPO push for {file_name}')
-
-    # 4. 원격 저장소에서 변경사항 가져오기 및 푸시
-    logger.info("Pulling latest changes from DPO repository...")
-    repo.remotes.origin.pull()
-
-    logger.info("Re-applying stashed changes...")
-    if repo.git.stash('list'):
-        repo.git.stash('pop')
-
+    # 6. 변경사항 커밋 및 푸시
     repo.index.add([str(file_path.resolve())])
     repo.index.commit(commit_message)
-
-    # 그 다음 원격 저장소의 변경사항을 pull (rebase) 합니다.
-    logger.info("Pulling latest changes from DPO repository...")
-    repo.remotes.origin.pull()
     
-    # 최종 변경사항을 push 합니다.
     logger.info("Pushing DPO data to remote repository...")
-    origin = repo.remote(name='origin')
     origin.push()
     logger.info("Successfully pushed DPO data to Git.")
 
