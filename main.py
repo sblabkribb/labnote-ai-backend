@@ -476,8 +476,13 @@ async def populate_note(request: PopulateNoteRequest):
 # Git 작업을 처리할 새로운 동기 함수
 def _run_git_operations(token: str, repo_url: str, local_path_str: str, preference_data: dict, commit_message: str):
     """Git 작업을 동기적으로 처리하는 헬퍼 함수"""
+    # 1. 파일 경로 및 Git 저장소 설정
     local_path = Path(local_path_str)
     repo_url_with_token = repo_url.replace("https://", f"https://oauth2:{token}@")
+    
+    file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
+    data_dir = local_path / "data"
+    file_path = data_dir / file_name
 
     if local_path.exists():
         repo = git.Repo(local_path)
@@ -485,25 +490,29 @@ def _run_git_operations(token: str, repo_url: str, local_path_str: str, preferen
         logger.info(f"Cloning DPO repository to {local_path}...")
         repo = git.Repo.clone_from(repo_url_with_token, local_path)
 
-    # 수정: Git 사용자 정보 및 rebase 설정 추가
     with repo.config_writer() as git_config:
         git_config.set_value('user', 'email', 'labnote-ai@example.com')
         git_config.set_value('user', 'name', 'LabNote AI Bot')
         git_config.set_value('pull', 'rebase', 'true')
 
-    logger.info("Pulling latest changes from DPO repository...")
-    repo.remotes.origin.pull()
-    
-    data_dir = local_path / "data"
     data_dir.mkdir(exist_ok=True)
-    
-    file_name = f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4()}.json"
-    file_path = data_dir / file_name
-    
+
+    # 2. 새로운 DPO 데이터 파일 생성
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(preference_data, f, ensure_ascii=False, indent=2)
-    
     logger.info(f"DPO data saved to {file_path}")
+
+    # 3. Git Stash를 사용하여 충돌 방지
+    logger.info("Stashing local changes before pulling...")
+    repo.git.stash('push', '-u', '-m', f'autostash before DPO push for {file_name}')
+
+    # 4. 원격 저장소에서 변경사항 가져오기 및 푸시
+    logger.info("Pulling latest changes from DPO repository...")
+    repo.remotes.origin.pull()
+
+    logger.info("Re-applying stashed changes...")
+    if repo.git.stash('list'):
+        repo.git.stash('pop')
 
     repo.index.add([str(file_path.resolve())])
     repo.index.commit(commit_message)
