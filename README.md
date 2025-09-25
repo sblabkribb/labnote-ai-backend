@@ -29,7 +29,7 @@ graph TD
         B --> C[API Endpoints];
         C -- "/create_scaffold" --> D[Scaffold Generator];
         C -- "/populate_note" --> E{Agent Executor};
-        C -- "/record_preference" --> F[DPO Feedback Recorder];
+        C -- "/record_preference" --> F{DPO Feedback Recorder};
         C -- "/chat" --> G[Chat Handler];
         C -- "/record_git_feedback" --> F;
     end
@@ -49,18 +49,21 @@ graph TD
     
     subgraph "Data & Storage"
         L -- "Retrieves SOP context" --> M[Redis Vector Store];
-        M -- "Embeddings" --> N[Nomic Embeddings];
-        F -- "Stores DPO data" --> O[Redis Cache];
+        M -- "Embeddings" --> N[Nomic Embeddings]; 
+        F -- "Stores DPO data as JSON" --> O[Git Repository];
         L -- "Loads SOPs" --> P["SOP Docs (.md)"];
+        U[Evaluation & Feedback Metrics] --> V[SQLite DB];
     end
 
     subgraph "CI/CD & DPO Pipeline"
-        Q["GitHub Push (labnote/*.md)"] --> R{GitHub Actions};
+        Q["GitHub Push (labnote/**.md)"] --> R{GitHub Actions};
         R -- "Runs script" --> C;
         S[run_full_dpo_pipeline.sh] --> T[DPO Training];
         T --> K;
         S --> B;
+        S -- "Runs evaluation" --> U;
     end
+
 
     style K fill:#f9f,stroke:#333,stroke-width:2px
     style M fill:#bbf,stroke:#333,stroke-width:2px
@@ -82,13 +85,30 @@ graph TD
   - **RAG 파이프라인**: `sop` 디렉토리의 표준운영절차(SOP) 문서들을 벡터화하여 Redis에 저장하고, 사용자 쿼리와 관련된 내용을 검색하여 LLM 프롬프트에 컨텍스트로 제공함으로써 답변의 정확성과 구체성을 향상시킵니다.
 
 ### DPO 피드백 루프
-
-  - **사용자 수정 기록 (`/record_preference`):** 사용자가 AI의 제안을 선택하고 수정한 최종 내용을 `chosen`으로, AI의 원본 제안과 다른 옵션들을 `rejected`로 Redis에 저장하여 DPO 학습 데이터를 구축합니다.
-  - **Git 커밋 기반 피드백 자동화 (`dpo_feedback.yml`):** `labnote` 디렉토리의 `.md` 파일에 변경사항이 Push되면 GitHub Actions가 트리거됩니다. 이전 버전과 현재 버전을 비교하여 변경된 내용을 `chosen`(현재)과 `rejected`(이전)로 구분하고, 이를 DPO 데이터로 API 서버(`record_git_feedback`)에 전송합니다.
+  - **사용자 수정 기록 및 Git 저장 (`/record_preference`):** 사용자가 AI의 제안을 선택하고 수정한 최종 내용을 `chosen`으로, AI의 원본 제안과 다른 옵션들을 `rejected`로 구분합니다. 이 데이터는 DPO 학습을 위해 별도의 **Git 저장소에 JSON 파일로 커밋 및 푸시**되어 안정적으로 버전 관리됩니다.
+  - **사용자 피드백 지표 추적**: 사용자가 AI의 원본 제안(`chosen_original`)을 얼마나 수정했는지 `edit_distance_ratio`라는 지표로 계산하여 SQLite 데이터베이스에 저장합니다. 이 지표는 모델 성능 대시보드에서 시각화되어 모델 개선 효과를 정량적으로 추적하는 데 사용됩니다.
+  - **GPU 성능 최적화**: 서버 시작 시 백그라운드 작업을 실행하여 주기적으로(`5분`) 가장 큰 `llama3:70b` 모델을 호출합니다. 이를 통해 GPU 메모리에서 모델이 언로드되는 것을 방지하고, 사용자가 요청 시 즉각적인 응답을 받을 수 있도록 합니다.
 
 -----
 
-## 3\. 작동 방식 (데이터 흐름)
+## 3\. 모델 성능 평가 및 대시보드
+
+`run_full_dpo_pipeline.sh` 스크립트를 통해 새로운 DPO 학습 모델이 배포되면, 자동으로 모델 성능 평가가 진행됩니다.
+
+1.  **자동 평가 (`scripts/evaluate_model.py`)**:
+    - 사전에 정의된 프롬프트 세트(`evaluation_prompts.json`)를 사용하여 새로 배포된 모델(후보 모델)과 기존 모델(베이스라인 모델)의 응답을 각각 생성합니다.
+    - 더 강력한 상위 모델(`llama3:70b` 등)을 '심판(Judge)'으로 사용하여, 두 모델의 응답 중 어느 것이 더 우수한지 평가하고 그 이유를 분석합니다.
+
+2.  **결과 저장**:
+    - 심판 모델의 평가 결과(승, 패, 무승부)와 승률, 사용된 프롬프트 등은 SQLite 데이터베이스(`evaluation_results.db`)에 기록됩니다.
+
+3.  **성능 대시보드 (`/dashboard`)**:
+    - 웹 브라우저에서 `/dashboard` 엔드포인트에 접속하면, 데이터베이스에 기록된 평가 이력을 기반으로 **후보 모델의 승률 변화 추이**를 보여주는 꺾은선 그래프와 상세 평가 내역 테이블을 확인할 수 있습니다.
+    - 이를 통해 DPO 파인튜닝이 모델 성능에 미치는 영향을 시각적이고 직관적으로 파악할 수 있습니다.
+
+-----
+
+## 4\. 작동 방식 (데이터 흐름)
 
 AI가 실험 노트의 특정 섹션을 채우는 과정은 다음과 같습니다.
 
@@ -118,8 +138,8 @@ sequenceDiagram
     alt Quality Threshold Passed
         SupervisorAgent-->>Backend: Return options
         Backend-->>User: Present options
-        User->>Backend: POST /record_preference
-        Backend->>Redis: Store DPO data
+        User->>Backend: POST /record_preference (with edits)
+        Backend->>O: Push DPO data to Git Repo
     else Quality Threshold Not Passed
         SupervisorAgent-->>SpecialistAgents: Request revision with feedback
         SpecialistAgents->>OllamaLLMs: Regenerate drafts
